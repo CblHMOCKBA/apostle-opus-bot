@@ -11,10 +11,13 @@ def get_main_menu():
                 KeyboardButton(text="✏️ Редактировать")
             ],
             [
-                KeyboardButton(text="📊 Статистика"),
-                KeyboardButton(text="⚙️ Настройки")
+                KeyboardButton(text="📋 Шаблоны"),
+                KeyboardButton(text="📊 Опрос")
             ],
-            [KeyboardButton(text="🚀 Рекламировать Ваш канал")]
+            [
+                KeyboardButton(text="📈 Статистика"),
+                KeyboardButton(text="⚙️ Настройки")
+            ]
         ],
         resize_keyboard=True
     )

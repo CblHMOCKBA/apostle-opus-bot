@@ -16,7 +16,9 @@ from handlers import (
     scheduled_router,
     edit_post_router,
     settings_router,
-    stats_router
+    stats_router,
+    templates_router,
+    polls_router
 )
 
 # Настройка логирования
@@ -50,6 +52,8 @@ async def main():
     dp.include_router(edit_post_router)
     dp.include_router(settings_router)
     dp.include_router(stats_router)
+    dp.include_router(templates_router)
+    dp.include_router(polls_router)
     
     # Запуск планировщика
     start_scheduler(bot)

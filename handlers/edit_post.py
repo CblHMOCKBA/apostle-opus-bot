@@ -51,6 +51,9 @@ def get_edit_keyboard(has_media: bool = False, has_buttons: bool = False):
         ])
     
     buttons.append([
+        InlineKeyboardButton(text="🔄 Копировать пост", callback_data="copy_post")
+    ])
+    buttons.append([
         InlineKeyboardButton(text="💾 Сохранить изменения", callback_data="save_post_changes")
     ])
     buttons.append([
@@ -270,6 +273,210 @@ async def back_to_edit_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(EditPostStates.editing)
     await callback.answer()
 
+
+# ============ КОПИРОВАНИЕ ПОСТА ============
+
+@router.callback_query(EditPostStates.editing, F.data == "copy_post")
+async def copy_post(callback: CallbackQuery, state: FSMContext):
+    """Копирование поста для создания нового"""
+    data = await state.get_data()
+    
+    # Получаем каналы для выбора
+    channels = await db.get_channels(callback.from_user.id)
+    
+    if len(channels) == 1:
+        # Сразу копируем в тот же канал
+        await state.update_data(copy_channel_id=channels[0]['channel_id'])
+        await show_copy_options(callback, state)
+    else:
+        # Выбор канала
+        buttons = []
+        for ch in channels:
+            title = ch['channel_title'] or ch['channel_username']
+            buttons.append([
+                InlineKeyboardButton(text=f"📢 {title}", callback_data=f"copy_to_channel_{ch['channel_id']}")
+            ])
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_edit_menu")])
+        
+        await callback.message.edit_text(
+            "🔄 <b>Копирование поста</b>\n\n"
+            "Выберите канал для публикации копии:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    
+    await callback.answer()
+
+
+@router.callback_query(EditPostStates.editing, F.data.startswith("copy_to_channel_"))
+async def copy_channel_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбран канал для копии"""
+    channel_id = int(callback.data.split("_")[-1])
+    await state.update_data(copy_channel_id=channel_id)
+    await show_copy_options(callback, state)
+
+
+async def show_copy_options(callback: CallbackQuery, state: FSMContext):
+    """Показать опции копирования"""
+    await callback.message.edit_text(
+        "🔄 <b>Копирование поста</b>\n\n"
+        "Выберите действие:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📤 Опубликовать копию сейчас", callback_data="publish_copy_now")],
+            [InlineKeyboardButton(text="✏️ Редактировать перед публикацией", callback_data="edit_copy")],
+            [InlineKeyboardButton(text="📋 Сохранить как шаблон", callback_data="save_as_template")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_edit_menu")]
+        ])
+    )
+    await callback.answer()
+
+
+@router.callback_query(EditPostStates.editing, F.data == "publish_copy_now")
+async def publish_copy_now(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Опубликовать копию сейчас"""
+    data = await state.get_data()
+    channel_id = data.get('copy_channel_id', data.get('channel_id'))
+    
+    text = data.get('new_text', data.get('original_text', ''))
+    media_type = data.get('media_type')
+    media_file_id = data.get('media_file_id')
+    buttons_text = data.get('new_buttons')
+    
+    keyboard = None
+    if buttons_text:
+        keyboard = parse_url_buttons(buttons_text)
+    
+    settings = await db.get_user_settings(callback.from_user.id)
+    parse_mode = settings['formatting'] if settings else 'HTML'
+    disable_notification = not settings['notifications'] if settings else True
+    
+    try:
+        if media_type == 'photo' and media_file_id:
+            msg = await bot.send_photo(
+                chat_id=channel_id,
+                photo=media_file_id,
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode=parse_mode,
+                disable_notification=disable_notification
+            )
+        elif media_type == 'video' and media_file_id:
+            msg = await bot.send_video(
+                chat_id=channel_id,
+                video=media_file_id,
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode=parse_mode,
+                disable_notification=disable_notification
+            )
+        elif media_type == 'document' and media_file_id:
+            msg = await bot.send_document(
+                chat_id=channel_id,
+                document=media_file_id,
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode=parse_mode,
+                disable_notification=disable_notification
+            )
+        else:
+            msg = await bot.send_message(
+                chat_id=channel_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode=parse_mode,
+                disable_notification=disable_notification
+            )
+        
+        await db.add_post_stats(channel_id, msg.message_id)
+        
+        channel = await db.get_channel_by_id(channel_id)
+        username = channel['channel_username'] if channel else None
+        
+        if username:
+            url = f"https://t.me/{username.lstrip('@')}/{msg.message_id}"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👁 Посмотреть", url=url)],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
+            ])
+        else:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
+            ])
+        
+        await state.clear()
+        await callback.message.edit_text(
+            "✅ <b>Копия поста опубликована!</b>",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    
+    except Exception as e:
+        await callback.message.edit_text(
+            f"❌ <b>Ошибка:</b>\n{e}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_edit_menu")]
+            ])
+        )
+    
+    await callback.answer()
+
+
+@router.callback_query(EditPostStates.editing, F.data == "edit_copy")
+async def edit_copy(callback: CallbackQuery, state: FSMContext):
+    """Редактировать копию перед публикацией"""
+    from handlers.create_post import CreatePostStates, get_post_constructor_keyboard
+    
+    data = await state.get_data()
+    
+    # Переносим данные в формат create_post
+    await state.update_data(
+        post_text=data.get('new_text', data.get('original_text', '')),
+        channel_id=data.get('copy_channel_id', data.get('channel_id'))
+    )
+    
+    has_text = bool(data.get('original_text'))
+    has_media = data.get('has_media', False)
+    has_buttons = bool(data.get('new_buttons'))
+    
+    await callback.message.edit_text(
+        "📝 <b>Редактирование копии</b>\n\n"
+        "Измените нужные элементы:",
+        parse_mode="HTML",
+        reply_markup=get_post_constructor_keyboard(
+            has_text=has_text,
+            has_media=has_media,
+            has_buttons=has_buttons
+        )
+    )
+    await state.set_state(CreatePostStates.constructor)
+    await callback.answer()
+
+
+@router.callback_query(EditPostStates.editing, F.data == "save_as_template")
+async def save_as_template(callback: CallbackQuery, state: FSMContext):
+    """Сохранить как шаблон"""
+    from handlers.templates import TemplateStates
+    
+    data = await state.get_data()
+    
+    await state.update_data(
+        template_text=data.get('new_text', data.get('original_text', '')),
+        waiting_content=False
+    )
+    
+    await callback.message.edit_text(
+        "📋 <b>Сохранение как шаблон</b>\n\n"
+        "Введите название для шаблона:",
+        parse_mode="HTML",
+        reply_markup=get_back_inline_keyboard("back_to_edit_menu")
+    )
+    await state.set_state(TemplateStates.enter_name)
+    await callback.answer()
+
+
+# ============ Сохранение изменений ============
 
 @router.callback_query(EditPostStates.editing, F.data == "save_post_changes")
 async def save_post_changes(callback: CallbackQuery, state: FSMContext, bot: Bot):

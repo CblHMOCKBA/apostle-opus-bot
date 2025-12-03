@@ -1,5 +1,5 @@
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, ContentType
+from aiogram.types import Message, CallbackQuery, ContentType, InputMediaPhoto, InputMediaVideo
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -27,6 +27,7 @@ class CreatePostStates(StatesGroup):
     constructor = State()
     add_media = State()
     add_buttons = State()
+    add_album = State()  # Новое состояние для альбомов
     preview = State()
     publish_menu = State()
     schedule_custom = State()
@@ -40,9 +41,63 @@ def get_post_data(data: dict) -> dict:
         'text': data.get('post_text', ''),
         'media_type': data.get('media_type'),
         'media_file_id': data.get('media_file_id'),
+        'album': data.get('album', []),  # Для альбомов
         'buttons': data.get('buttons_text'),
         'delete_after': data.get('delete_after')
     }
+
+
+def get_post_constructor_keyboard(has_text: bool = False, has_media: bool = False, 
+                                   has_buttons: bool = False, has_album: bool = False):
+    """Клавиатура конструктора поста"""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    buttons = []
+    
+    # Основные элементы поста
+    if has_text:
+        buttons.append([
+            InlineKeyboardButton(text="✏️ Изменить текст", callback_data="edit_text")
+        ])
+    
+    if has_album:
+        buttons.append([
+            InlineKeyboardButton(text=f"📸 Альбом ({has_album} фото)", callback_data="view_album"),
+            InlineKeyboardButton(text="🗑 Очистить", callback_data="clear_album")
+        ])
+    elif has_media:
+        buttons.append([
+            InlineKeyboardButton(text="🖼 Изменить медиа", callback_data="edit_media"),
+            InlineKeyboardButton(text="🗑 Удалить медиа", callback_data="remove_media")
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(text="🖼 Медиафайл", callback_data="add_media"),
+            InlineKeyboardButton(text="📸 Альбом", callback_data="add_album")
+        ])
+    
+    if has_buttons:
+        buttons.append([
+            InlineKeyboardButton(text="🔗 Изменить кнопки", callback_data="edit_buttons"),
+            InlineKeyboardButton(text="🗑 Удалить кнопки", callback_data="remove_buttons")
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(text="🔗 Добавить URL-кнопки", callback_data="add_buttons")
+        ])
+    
+    # Действия
+    buttons.append([
+        InlineKeyboardButton(text="👁 Предпросмотр", callback_data="preview")
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="📤 Далее", callback_data="next_step")
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_post")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 async def send_post_preview(message: Message, data: dict, bot: Bot, edit: bool = False):
@@ -51,6 +106,7 @@ async def send_post_preview(message: Message, data: dict, bot: Bot, edit: bool =
     media_type = data.get('media_type')
     media_file_id = data.get('media_file_id')
     buttons_text = data.get('buttons_text')
+    album = data.get('album', [])
     
     # Парсим кнопки
     keyboard = None
@@ -63,7 +119,32 @@ async def send_post_preview(message: Message, data: dict, bot: Bot, edit: bool =
     disable_web_page_preview = not settings['link_preview'] if settings else False
     
     try:
-        if media_type == 'photo' and media_file_id:
+        # Альбом
+        if album and len(album) > 0:
+            if edit:
+                await message.edit_text("👁 <b>Предпросмотр альбома:</b>", parse_mode="HTML")
+            
+            media_group = []
+            for i, item in enumerate(album):
+                if item['type'] == 'photo':
+                    media = InputMediaPhoto(media=item['file_id'])
+                else:
+                    media = InputMediaVideo(media=item['file_id'])
+                
+                if i == 0 and text:
+                    media.caption = text
+                    media.parse_mode = parse_mode
+                
+                media_group.append(media)
+            
+            await message.answer_media_group(media=media_group)
+            
+            if keyboard:
+                await message.answer("👆 Кнопки будут под альбомом", reply_markup=keyboard)
+            return True
+        
+        # Одиночное медиа
+        elif media_type == 'photo' and media_file_id:
             if edit:
                 await message.edit_text("👁 <b>Предпросмотр:</b>", parse_mode="HTML")
             await message.answer_photo(
@@ -123,6 +204,7 @@ async def publish_post(bot: Bot, channel_id: int, data: dict, user_id: int) -> t
     media_file_id = data.get('media_file_id')
     buttons_text = data.get('buttons_text')
     delete_after = data.get('delete_after')
+    album = data.get('album', [])
     
     # Парсим кнопки
     keyboard = None
@@ -135,7 +217,40 @@ async def publish_post(bot: Bot, channel_id: int, data: dict, user_id: int) -> t
     disable_web_page_preview = not settings['link_preview'] if settings else False
     
     try:
-        if media_type == 'photo' and media_file_id:
+        # Публикация альбома
+        if album and len(album) > 0:
+            media_group = []
+            for i, item in enumerate(album):
+                if item['type'] == 'photo':
+                    media = InputMediaPhoto(media=item['file_id'])
+                else:
+                    media = InputMediaVideo(media=item['file_id'])
+                
+                if i == 0 and text:
+                    media.caption = text
+                    media.parse_mode = parse_mode
+                
+                media_group.append(media)
+            
+            messages = await bot.send_media_group(
+                chat_id=channel_id,
+                media=media_group,
+                disable_notification=disable_notification
+            )
+            
+            # Отправляем кнопки отдельным сообщением если есть
+            if keyboard:
+                await bot.send_message(
+                    chat_id=channel_id,
+                    text="⬆️",
+                    reply_markup=keyboard,
+                    disable_notification=disable_notification
+                )
+            
+            msg = messages[0]
+        
+        # Одиночное медиа
+        elif media_type == 'photo' and media_file_id:
             msg = await bot.send_photo(
                 chat_id=channel_id,
                 photo=media_file_id,
@@ -319,6 +434,7 @@ async def post_text_received(message: Message, state: FSMContext):
     # Показываем конструктор
     has_media = data.get('media_file_id') is not None
     has_buttons = data.get('buttons_text') is not None
+    album = data.get('album', [])
     
     await message.answer(
         "✅ <b>Текст добавлен!</b>\n\n"
@@ -327,7 +443,8 @@ async def post_text_received(message: Message, state: FSMContext):
         reply_markup=get_post_constructor_keyboard(
             has_text=True,
             has_media=has_media,
-            has_buttons=has_buttons
+            has_buttons=has_buttons,
+            has_album=len(album) if album else False
         )
     )
     await state.set_state(CreatePostStates.constructor)
@@ -436,6 +553,164 @@ async def add_media(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CreatePostStates.add_media)
     await callback.answer()
 
+
+# ============ АЛЬБОМЫ ============
+
+@router.callback_query(CreatePostStates.constructor, F.data == "add_album")
+async def add_album_start(callback: CallbackQuery, state: FSMContext):
+    """Начало добавления альбома"""
+    await state.update_data(album=[], media_type=None, media_file_id=None)
+    
+    await callback.message.edit_text(
+        "📸 <b>Создание альбома</b>\n\n"
+        "Отправляйте фото или видео по одному.\n"
+        "Максимум 10 файлов в альбоме.\n\n"
+        "📎 Добавлено: 0/10",
+        parse_mode="HTML",
+        reply_markup=get_back_inline_keyboard("finish_album")
+    )
+    await state.set_state(CreatePostStates.add_album)
+    await callback.answer()
+
+
+@router.message(CreatePostStates.add_album, F.photo)
+async def album_photo_received(message: Message, state: FSMContext):
+    """Получено фото для альбома"""
+    data = await state.get_data()
+    album = data.get('album', [])
+    
+    if len(album) >= 10:
+        await message.answer("⚠️ Максимум 10 файлов в альбоме!")
+        return
+    
+    album.append({
+        'type': 'photo',
+        'file_id': message.photo[-1].file_id
+    })
+    
+    await state.update_data(album=album)
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    await message.answer(
+        f"✅ Фото добавлено!\n\n"
+        f"📎 Добавлено: {len(album)}/10\n\n"
+        "Отправьте ещё или нажмите «Готово»",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✅ Готово ({len(album)} фото)", callback_data="finish_album")]
+        ])
+    )
+
+
+@router.message(CreatePostStates.add_album, F.video)
+async def album_video_received(message: Message, state: FSMContext):
+    """Получено видео для альбома"""
+    data = await state.get_data()
+    album = data.get('album', [])
+    
+    if len(album) >= 10:
+        await message.answer("⚠️ Максимум 10 файлов в альбоме!")
+        return
+    
+    album.append({
+        'type': 'video',
+        'file_id': message.video.file_id
+    })
+    
+    await state.update_data(album=album)
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    await message.answer(
+        f"✅ Видео добавлено!\n\n"
+        f"📎 Добавлено: {len(album)}/10\n\n"
+        "Отправьте ещё или нажмите «Готово»",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✅ Готово ({len(album)} файлов)", callback_data="finish_album")]
+        ])
+    )
+
+
+@router.callback_query(F.data == "finish_album")
+async def finish_album(callback: CallbackQuery, state: FSMContext):
+    """Завершение добавления альбома"""
+    data = await state.get_data()
+    album = data.get('album', [])
+    has_text = bool(data.get('post_text'))
+    has_buttons = data.get('buttons_text') is not None
+    
+    if not album:
+        await callback.message.edit_text(
+            "📝 <b>Конструктор поста</b>\n\n"
+            "Альбом пуст. Добавьте элементы:",
+            parse_mode="HTML",
+            reply_markup=get_post_constructor_keyboard(
+                has_text=has_text,
+                has_media=False,
+                has_buttons=has_buttons
+            )
+        )
+    else:
+        await callback.message.edit_text(
+            f"✅ <b>Альбом создан!</b> ({len(album)} файлов)\n\n"
+            "Добавьте другие элементы или опубликуйте:",
+            parse_mode="HTML",
+            reply_markup=get_post_constructor_keyboard(
+                has_text=has_text,
+                has_media=False,
+                has_buttons=has_buttons,
+                has_album=len(album)
+            )
+        )
+    
+    await state.set_state(CreatePostStates.constructor)
+    await callback.answer()
+
+
+@router.callback_query(CreatePostStates.constructor, F.data == "clear_album")
+async def clear_album(callback: CallbackQuery, state: FSMContext):
+    """Очистить альбом"""
+    await state.update_data(album=[])
+    
+    data = await state.get_data()
+    has_text = bool(data.get('post_text'))
+    has_buttons = data.get('buttons_text') is not None
+    
+    await callback.message.edit_text(
+        "🗑 <b>Альбом очищен</b>",
+        parse_mode="HTML",
+        reply_markup=get_post_constructor_keyboard(
+            has_text=has_text,
+            has_media=False,
+            has_buttons=has_buttons
+        )
+    )
+    await callback.answer("Альбом очищен")
+
+
+@router.callback_query(CreatePostStates.constructor, F.data == "view_album")
+async def view_album(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Просмотр альбома"""
+    data = await state.get_data()
+    album = data.get('album', [])
+    
+    if not album:
+        await callback.answer("Альбом пуст")
+        return
+    
+    # Отправляем альбом как превью
+    media_group = []
+    for item in album:
+        if item['type'] == 'photo':
+            media_group.append(InputMediaPhoto(media=item['file_id']))
+        else:
+            media_group.append(InputMediaVideo(media=item['file_id']))
+    
+    await callback.message.answer_media_group(media=media_group)
+    await callback.answer()
+
+
+# ============ Остальной функционал ============
 
 @router.message(CreatePostStates.add_media, F.photo)
 async def media_photo_received(message: Message, state: FSMContext):
@@ -568,6 +843,7 @@ async def buttons_received(message: Message, state: FSMContext):
     data = await state.get_data()
     has_text = bool(data.get('post_text'))
     has_media = data.get('media_file_id') is not None
+    album = data.get('album', [])
     
     await message.answer(
         "✅ <b>Кнопки добавлены!</b>",
@@ -575,7 +851,8 @@ async def buttons_received(message: Message, state: FSMContext):
         reply_markup=get_post_constructor_keyboard(
             has_text=has_text,
             has_media=has_media,
-            has_buttons=True
+            has_buttons=True,
+            has_album=len(album) if album else False
         )
     )
     await state.set_state(CreatePostStates.constructor)
@@ -589,6 +866,7 @@ async def remove_buttons(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     has_text = bool(data.get('post_text'))
     has_media = data.get('media_file_id') is not None
+    album = data.get('album', [])
     
     await callback.message.edit_text(
         "🗑 <b>Кнопки удалены</b>",
@@ -596,7 +874,8 @@ async def remove_buttons(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_post_constructor_keyboard(
             has_text=has_text,
             has_media=has_media,
-            has_buttons=False
+            has_buttons=False,
+            has_album=len(album) if album else False
         )
     )
     await callback.answer("Кнопки удалены")
@@ -609,6 +888,7 @@ async def back_to_constructor(callback: CallbackQuery, state: FSMContext):
     has_text = bool(data.get('post_text'))
     has_media = data.get('media_file_id') is not None
     has_buttons = data.get('buttons_text') is not None
+    album = data.get('album', [])
     
     await callback.message.edit_text(
         "📝 <b>Конструктор поста</b>\n\n"
@@ -617,7 +897,8 @@ async def back_to_constructor(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_post_constructor_keyboard(
             has_text=has_text,
             has_media=has_media,
-            has_buttons=has_buttons
+            has_buttons=has_buttons,
+            has_album=len(album) if album else False
         )
     )
     await state.set_state(CreatePostStates.constructor)
@@ -630,8 +911,9 @@ async def back_to_constructor(callback: CallbackQuery, state: FSMContext):
 async def preview_post(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """Предпросмотр поста"""
     data = await state.get_data()
+    album = data.get('album', [])
     
-    if not data.get('post_text') and not data.get('media_file_id'):
+    if not data.get('post_text') and not data.get('media_file_id') and not album:
         await callback.answer("⚠️ Добавьте текст или медиафайл", show_alert=True)
         return
     
@@ -650,7 +932,8 @@ async def preview_post(callback: CallbackQuery, state: FSMContext, bot: Bot):
             reply_markup=get_post_constructor_keyboard(
                 has_text=has_text,
                 has_media=has_media,
-                has_buttons=has_buttons
+                has_buttons=has_buttons,
+                has_album=len(album) if album else False
             )
         )
     await callback.answer()
@@ -660,8 +943,9 @@ async def preview_post(callback: CallbackQuery, state: FSMContext, bot: Bot):
 async def next_step(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """Переход к публикации"""
     data = await state.get_data()
+    album = data.get('album', [])
     
-    if not data.get('post_text') and not data.get('media_file_id'):
+    if not data.get('post_text') and not data.get('media_file_id') and not album:
         await callback.answer("⚠️ Добавьте текст или медиафайл", show_alert=True)
         return
     
@@ -699,6 +983,7 @@ async def back_to_edit(callback: CallbackQuery, state: FSMContext):
     has_text = bool(data.get('post_text'))
     has_media = data.get('media_file_id') is not None
     has_buttons = data.get('buttons_text') is not None
+    album = data.get('album', [])
     
     await callback.message.edit_text(
         "📝 <b>Конструктор поста</b>",
@@ -706,7 +991,8 @@ async def back_to_edit(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_post_constructor_keyboard(
             has_text=has_text,
             has_media=has_media,
-            has_buttons=has_buttons
+            has_buttons=has_buttons,
+            has_album=len(album) if album else False
         )
     )
     await state.set_state(CreatePostStates.constructor)

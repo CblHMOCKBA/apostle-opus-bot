@@ -60,6 +60,20 @@ async def init_db():
             )
         """)
         
+        # Таблица шаблонов постов
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                text TEXT,
+                media_type TEXT,
+                media_file_id TEXT,
+                buttons TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         await db.commit()
 
 
@@ -234,4 +248,48 @@ async def add_post_stats(channel_id: int, message_id: int):
                VALUES (?, ?, ?)""",
             (channel_id, message_id, datetime.now())
         )
+        await db.commit()
+
+
+# ============ TEMPLATES ============
+
+async def add_template(user_id: int, name: str, text: str, media_type: str,
+                       media_file_id: str, buttons: str):
+    """Добавить шаблон"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """INSERT INTO templates 
+               (user_id, name, text, media_type, media_file_id, buttons)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, name, text, media_type, media_file_id, buttons)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_user_templates(user_id: int):
+    """Получить шаблоны пользователя"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM templates WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def get_template(template_id: int):
+    """Получить шаблон по ID"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM templates WHERE id = ?", (template_id,)
+        )
+        return await cursor.fetchone()
+
+
+async def delete_template(template_id: int):
+    """Удалить шаблон"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM templates WHERE id = ?", (template_id,))
         await db.commit()
