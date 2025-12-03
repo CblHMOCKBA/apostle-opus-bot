@@ -15,7 +15,7 @@ def get_main_menu():
                 KeyboardButton(text="📊 Опрос")
             ],
             [
-                KeyboardButton(text="📈 Статистика"),
+                KeyboardButton(text="📊 Статистика"),
                 KeyboardButton(text="⚙️ Настройки")
             ]
         ],

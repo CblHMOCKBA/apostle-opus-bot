@@ -10,7 +10,7 @@ import database as db
 router = Router()
 
 
-@router.message(F.text == "📊 Статистика")
+@router.message(F.text.in_(["📊 Статистика", "📈 Статистика"]))
 @router.message(Command("stats"))
 async def show_stats(message: Message, state: FSMContext, bot: Bot):
     """Показать статистику"""
@@ -68,9 +68,7 @@ async def show_channel_stats(message: Message, channel_id: int, bot: Bot):
 
 👥 <b>Подписчиков:</b> {member_count:,}
 
-<i>📈 Расширенная статистика в разработке...</i>
-
-<i>Для полной статистики используйте @TGStat_Bot или Telegram Analytics.</i>"""
+<i>📈 Для полной статистики используйте @TGStat_Bot</i>"""
         
         await message.answer(
             text,
@@ -107,9 +105,7 @@ async def stats_channel_selected(callback: CallbackQuery, bot: Bot):
 📢 <b>{title}</b>
 {username}
 
-👥 <b>Подписчиков:</b> {member_count:,}
-
-<i>📈 Расширенная статистика в разработке...</i>"""
+👥 <b>Подписчиков:</b> {member_count:,}"""
         
         await callback.message.edit_text(
             text,
