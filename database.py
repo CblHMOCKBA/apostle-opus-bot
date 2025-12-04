@@ -134,22 +134,35 @@ async def add_channel(channel_id: int, username: str, title: str, added_by: int)
     async with _db_lock:
         db = await get_db()
         try:
-            # Добавляем или обновляем канал
-            await db.execute(
-                """INSERT INTO channels (channel_id, channel_username, channel_title) 
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(channel_id) DO UPDATE SET 
-                   channel_username = excluded.channel_username,
-                   channel_title = excluded.channel_title""",
-                (channel_id, username, title)
+            # Проверяем структуру БД
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='user_channels'"
             )
+            has_new_structure = await cursor.fetchone() is not None
             
-            # Связываем пользователя с каналом
-            await db.execute(
-                """INSERT OR IGNORE INTO user_channels (user_id, channel_id) 
-                   VALUES (?, ?)""",
-                (added_by, channel_id)
-            )
+            if has_new_structure:
+                # Новая структура
+                await db.execute(
+                    """INSERT INTO channels (channel_id, channel_username, channel_title) 
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(channel_id) DO UPDATE SET 
+                       channel_username = excluded.channel_username,
+                       channel_title = excluded.channel_title""",
+                    (channel_id, username, title)
+                )
+                await db.execute(
+                    """INSERT OR IGNORE INTO user_channels (user_id, channel_id) 
+                       VALUES (?, ?)""",
+                    (added_by, channel_id)
+                )
+            else:
+                # Старая структура
+                await db.execute(
+                    """INSERT OR REPLACE INTO channels 
+                       (channel_id, channel_username, channel_title, added_by) 
+                       VALUES (?, ?, ?, ?)""",
+                    (channel_id, username, title, added_by)
+                )
             await db.commit()
         finally:
             await db.close()
@@ -159,13 +172,26 @@ async def get_channels(user_id: int = None):
     """Получить список каналов пользователя"""
     db = await get_db()
     try:
+        # Проверяем есть ли новая таблица user_channels
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='user_channels'"
+        )
+        has_new_structure = await cursor.fetchone() is not None
+        
         if user_id:
-            cursor = await db.execute(
-                """SELECT c.* FROM channels c
-                   INNER JOIN user_channels uc ON c.channel_id = uc.channel_id
-                   WHERE uc.user_id = ?""",
-                (user_id,)
-            )
+            if has_new_structure:
+                # Новая структура: связь через user_channels
+                cursor = await db.execute(
+                    """SELECT c.* FROM channels c
+                       INNER JOIN user_channels uc ON c.channel_id = uc.channel_id
+                       WHERE uc.user_id = ?""",
+                    (user_id,)
+                )
+            else:
+                # Старая структура: added_by в таблице channels
+                cursor = await db.execute(
+                    "SELECT * FROM channels WHERE added_by = ?", (user_id,)
+                )
         else:
             cursor = await db.execute("SELECT * FROM channels")
         return await cursor.fetchall()
@@ -190,16 +216,23 @@ async def remove_channel(channel_id: int, user_id: int = None):
     async with _db_lock:
         db = await get_db()
         try:
-            if user_id:
-                # Удаляем только связь пользователя с каналом
+            # Проверяем структуру БД
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='user_channels'"
+            )
+            has_new_structure = await cursor.fetchone() is not None
+            
+            if has_new_structure and user_id:
+                # Новая структура: удаляем только связь
                 await db.execute(
                     "DELETE FROM user_channels WHERE channel_id = ? AND user_id = ?",
                     (channel_id, user_id)
                 )
             else:
-                # Удаляем все связи и сам канал
-                await db.execute("DELETE FROM user_channels WHERE channel_id = ?", (channel_id,))
+                # Старая структура или полное удаление
                 await db.execute("DELETE FROM channels WHERE channel_id = ?", (channel_id,))
+                if has_new_structure:
+                    await db.execute("DELETE FROM user_channels WHERE channel_id = ?", (channel_id,))
             await db.commit()
         finally:
             await db.close()
