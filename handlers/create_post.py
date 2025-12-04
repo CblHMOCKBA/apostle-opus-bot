@@ -196,17 +196,9 @@ async def create_post_start(message: Message, state: FSMContext):
         await state.set_state(CreatePostStates.select_channel)
         return
     
-    if len(channels) == 1:
-        await state.update_data(channel_id=channels[0]['channel_id'])
-        await message.answer(
-            f"📝 <b>Канал:</b> {channels[0]['channel_title'] or channels[0]['channel_username']}\n\nВведите текст:",
-            parse_mode="HTML",
-            reply_markup=get_cancel_keyboard()
-        )
-        await state.set_state(CreatePostStates.enter_text)
-    else:
-        await message.answer("📢 <b>Выберите канал:</b>", parse_mode="HTML", reply_markup=get_channels_keyboard(channels))
-        await state.set_state(CreatePostStates.select_channel)
+    # Всегда показываем список каналов с кнопкой добавления
+    await message.answer("📢 <b>Выберите канал:</b>", parse_mode="HTML", reply_markup=get_channels_keyboard(channels))
+    await state.set_state(CreatePostStates.select_channel)
 
 
 @router.callback_query(CreatePostStates.select_channel, F.data.startswith("channel_select_"))
