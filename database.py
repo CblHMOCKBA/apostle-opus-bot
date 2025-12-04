@@ -231,6 +231,26 @@ async def update_scheduled_post_time(post_id: int, new_time: datetime):
         await db.commit()
 
 
+async def update_scheduled_post_text(post_id: int, text: str):
+    """Обновить текст отложенного поста"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE scheduled_posts SET text = ? WHERE id = ?",
+            (text, post_id)
+        )
+        await db.commit()
+
+
+async def update_scheduled_post_buttons(post_id: int, buttons: str):
+    """Обновить кнопки отложенного поста"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE scheduled_posts SET buttons = ? WHERE id = ?",
+            (buttons, post_id)
+        )
+        await db.commit()
+
+
 async def delete_scheduled_post(post_id: int):
     """Удалить отложенный пост"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
