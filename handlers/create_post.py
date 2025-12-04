@@ -171,10 +171,6 @@ async def publish_post(bot: Bot, channel_id: int, data: dict, user_id: int):
             last_error = str(e)
             logger.warning(f"Попытка {attempt + 1}/{max_retries} публикации в {channel_id}: {e}")
             
-            # Если бот кикнут - нет смысла повторять
-            if "kicked" in last_error.lower() or "blocked" in last_error.lower():
-                return False, f"Бот удалён из канала. Добавьте бота в админы заново."
-            
             if attempt < max_retries - 1:
                 await asyncio.sleep(1)
     
