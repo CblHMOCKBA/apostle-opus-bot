@@ -212,7 +212,7 @@ async def remove_channel_confirm(callback: CallbackQuery):
 async def confirm_remove_channel(callback: CallbackQuery):
     """Удаление канала"""
     channel_id = int(callback.data.split("_")[-1])
-    await db.remove_channel(channel_id)
+    await db.remove_channel(channel_id, user_id=callback.from_user.id)
     
     await callback.answer("Канал удален!")
     
