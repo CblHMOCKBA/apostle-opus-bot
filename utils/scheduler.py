@@ -10,11 +10,12 @@ from keyboards import parse_url_buttons
 
 logger = logging.getLogger(__name__)
 
+# Московский часовой пояс
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 
 def get_moscow_now():
-    """Московское время"""
+    """Получить текущее московское время (без tzinfo для сравнения с БД)"""
     return datetime.now(MOSCOW_TZ).replace(tzinfo=None)
 
 
@@ -31,46 +32,45 @@ def parse_db_time(time_str) -> datetime:
 
 
 async def check_scheduled_posts(bot: Bot):
-    """Проверка и публикация постов - с защитой от падений"""
+    """Проверка и публикация постов"""
     
     logger.info("Scheduler loop started")
     
     while True:
         try:
+            # Получаем МОСКОВСКОЕ время
             now = get_moscow_now()
             
-            # Логируем каждые 10 минут что scheduler жив
+            # Логируем каждые 10 минут
             if now.minute % 10 == 0 and now.second < 30:
                 logger.info(f"Scheduler alive. Moscow time: {now.strftime('%H:%M:%S')}")
             
             posts = await db.get_pending_posts()
             
-            if posts:
-                logger.info(f"Found {len(posts)} pending posts")
-            
             for post in posts:
                 try:
+                    # Время в БД уже московское
                     scheduled_time = parse_db_time(post['scheduled_time'])
                     
+                    logger.debug(f"Post {post['id']}: scheduled={scheduled_time}, now={now}")
+                    
                     if scheduled_time <= now:
-                        logger.info(f"Publishing post {post['id']} (scheduled: {scheduled_time}, now: {now})")
+                        logger.info(f"Publishing post {post['id']} (scheduled: {scheduled_time.strftime('%H:%M')}, now: {now.strftime('%H:%M')} MSK)")
                         await publish_scheduled_post(bot, post)
                     else:
-                        # Логируем сколько осталось до публикации
                         diff = scheduled_time - now
                         mins = int(diff.total_seconds() / 60)
                         if mins <= 5:
-                            logger.info(f"Post {post['id']} will be published in {mins} minutes")
+                            logger.info(f"Post {post['id']} in {mins} min (at {scheduled_time.strftime('%H:%M')} MSK)")
                 
                 except Exception as e:
                     logger.error(f"Error processing post {post['id']}: {e}")
-                    continue  # Продолжаем с другими постами
+                    continue
         
         except Exception as e:
             logger.error(f"Scheduler error: {e}")
-            # НЕ падаем, продолжаем работать
         
-        await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+        await asyncio.sleep(30)
 
 
 async def publish_scheduled_post(bot: Bot, post):
@@ -122,55 +122,40 @@ async def publish_scheduled_post(bot: Bot, post):
                 disable_notification=disable_notification
             )
         
-        # Помечаем как опубликованный
         await db.update_scheduled_post_status(post['id'], 'published')
         
         if msg:
             await db.add_post_stats(post['channel_id'], msg.message_id)
         
-        logger.info(f"✅ Post {post['id']} published successfully!")
+        logger.info(f"✅ Post {post['id']} published!")
         
-        # Уведомляем пользователя
         try:
-            await bot.send_message(
-                chat_id=post['user_id'],
-                text="✅ Отложенный пост опубликован!"
-            )
-        except Exception as e:
-            logger.warning(f"Could not notify user {post['user_id']}: {e}")
+            await bot.send_message(chat_id=post['user_id'], text="✅ Отложенный пост опубликован!")
+        except:
+            pass
         
-        # Таймер удаления
         if post['delete_after']:
             asyncio.create_task(delete_post_later(bot, post['channel_id'], msg.message_id, post['delete_after']))
     
     except Exception as e:
         logger.error(f"❌ Publish error for post {post['id']}: {e}")
-        
-        # Помечаем как ошибку чтобы не пытаться снова и снова
         await db.update_scheduled_post_status(post['id'], 'error')
-        
-        # Уведомляем пользователя об ошибке
         try:
-            await bot.send_message(
-                chat_id=post['user_id'],
-                text=f"❌ Ошибка публикации поста:\n{e}\n\n💡 Возможно бот удалён из канала. Переподключите канал."
-            )
+            await bot.send_message(chat_id=post['user_id'], text=f"❌ Ошибка публикации:\n{e}")
         except:
             pass
 
 
 async def delete_post_later(bot: Bot, channel_id: int, message_id: int, delay: int):
-    """Удаление поста через время"""
     await asyncio.sleep(delay)
     try:
         await bot.delete_message(chat_id=channel_id, message_id=message_id)
-        logger.info(f"Deleted message {message_id} after {delay}s")
+        logger.info(f"Deleted message {message_id}")
     except Exception as e:
         logger.error(f"Delete error: {e}")
 
 
 def start_scheduler(bot: Bot):
-    """Запуск планировщика"""
     asyncio.create_task(check_scheduled_posts(bot))
     now = get_moscow_now()
     logger.info(f"Scheduler started (Moscow time: {now.strftime('%H:%M:%S')})")

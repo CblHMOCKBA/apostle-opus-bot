@@ -16,7 +16,7 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 
 def get_moscow_now():
-    """Московское время без tzinfo для сравнения с БД"""
+    """Московское время без tzinfo"""
     return datetime.now(MOSCOW_TZ).replace(tzinfo=None)
 
 
@@ -42,7 +42,6 @@ class ScheduledStates(StatesGroup):
 @router.message(F.text == "📅 Отложенные")
 @router.message(Command("scheduled"))
 async def show_scheduled_posts(message: Message, state: FSMContext):
-    """Список отложенных постов"""
     await state.clear()
     
     posts = await db.get_user_scheduled_posts(message.from_user.id)
@@ -74,7 +73,7 @@ async def show_scheduled_posts(message: Message, state: FSMContext):
             )
         ])
     
-    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")])
+    buttons.append([InlineKeyboardButton(text="🏠 Меню", callback_data="back_to_main")])
     
     await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(ScheduledStates.viewing)
@@ -82,7 +81,6 @@ async def show_scheduled_posts(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("sched_view_"))
 async def view_scheduled_post(callback: CallbackQuery, state: FSMContext):
-    """Просмотр поста"""
     post_id = int(callback.data.split("_")[-1])
     post = await db.get_scheduled_post(post_id)
     
@@ -108,11 +106,6 @@ async def view_scheduled_post(callback: CallbackQuery, state: FSMContext):
     
     if post['buttons']:
         text += f"\n🔗 <b>Кнопки:</b> Да\n"
-    
-    if post['delete_after']:
-        hours = post['delete_after'] // 3600
-        mins = (post['delete_after'] % 3600) // 60
-        text += f"\n⏱ <b>Удалить через:</b> {hours}ч {mins}м\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Опубликовать сейчас", callback_data=f"sched_publish_{post_id}")],
@@ -143,9 +136,7 @@ async def edit_text_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(edit_post_id=post_id)
     
     await callback.message.edit_text(
-        f"✏️ <b>Текущий текст:</b>\n\n"
-        f"<i>{post['text'] or '[Пусто]'}</i>\n\n"
-        f"Отправьте новый текст:",
+        f"✏️ <b>Текущий текст:</b>\n\n<i>{post['text'] or '[Пусто]'}</i>\n\nОтправьте новый текст:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"sched_view_{post_id}")]
@@ -192,10 +183,9 @@ async def edit_buttons_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(edit_post_id=post_id)
     
     await callback.message.edit_text(
-        f"🔗 <b>Текущие кнопки:</b>\n\n"
-        f"<code>{post['buttons'] or '[Нет]'}</code>\n\n"
+        f"🔗 <b>Кнопки:</b>\n\n<code>{post['buttons'] or '[Нет]'}</code>\n\n"
         f"Формат: <code>Текст - http://url</code>\n"
-        f"Отправьте <code>удалить</code> чтобы убрать кнопки",
+        f"Отправьте <code>удалить</code> чтобы убрать",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"sched_view_{post_id}")]
@@ -221,7 +211,7 @@ async def save_buttons(message: Message, state: FSMContext):
     else:
         keyboard = parse_url_buttons(message.text)
         if not keyboard:
-            await message.answer("⚠️ Неверный формат!\nИспользуйте: <code>Текст - http://url</code>", parse_mode="HTML")
+            await message.answer("⚠️ Формат: <code>Текст - http://url</code>", parse_mode="HTML")
             return
         await db.update_scheduled_post_buttons(post_id, message.text)
         await message.answer("✅ Кнопки обновлены!")
@@ -246,18 +236,15 @@ async def change_time_menu(callback: CallbackQuery, state: FSMContext):
     now = get_moscow_now()
     
     await callback.message.edit_text(
-        f"⏰ <b>Изменить время</b>\n\n"
-        f"🕐 Сейчас: <b>{now.strftime('%H:%M')}</b> МСК",
+        f"⏰ <b>Изменить время</b>\n\n🕐 Сейчас: <b>{now.strftime('%H:%M')}</b> МСК",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="+1 час", callback_data=f"resched_1h_{post_id}"),
-                InlineKeyboardButton(text="+3 часа", callback_data=f"resched_3h_{post_id}")
+                InlineKeyboardButton(text="+1ч", callback_data=f"resched_1h_{post_id}"),
+                InlineKeyboardButton(text="+3ч", callback_data=f"resched_3h_{post_id}"),
+                InlineKeyboardButton(text="+6ч", callback_data=f"resched_6h_{post_id}")
             ],
-            [
-                InlineKeyboardButton(text="+6 часов", callback_data=f"resched_6h_{post_id}"),
-                InlineKeyboardButton(text="Завтра 9:00", callback_data=f"resched_tomorrow_{post_id}")
-            ],
+            [InlineKeyboardButton(text="🌅 Завтра 9:00", callback_data=f"resched_tomorrow_{post_id}")],
             [InlineKeyboardButton(text="✏️ Ввести вручную", callback_data=f"resched_custom_{post_id}")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sched_view_{post_id}")]
         ])
@@ -286,7 +273,7 @@ async def reschedule_action(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
             f"📅 <b>Введите время (МСК):</b>\n\n"
             f"Формат: <code>ЧЧ ММ ДД ММ</code>\n"
-            f"Пример: <code>14 30 05 12</code> = 5 декабря 14:30\n\n"
+            f"Пример: <code>14 30 17 12</code> = 17 дек 14:30\n\n"
             f"🕐 Сейчас: {now.strftime('%H:%M')} МСК",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -301,19 +288,17 @@ async def reschedule_action(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка")
         return
     
-    # Сохраняем московское время напрямую
     await db.update_scheduled_post_time(post_id, new_time)
     
     await callback.message.edit_text(
-        f"✅ <b>Время изменено!</b>\n\n"
-        f"📅 Публикация: {new_time.strftime('%d.%m в %H:%M')} МСК",
+        f"✅ <b>Время изменено!</b>\n\n📅 {new_time.strftime('%d.%m в %H:%M')} МСК",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📅 К посту", callback_data=f"sched_view_{post_id}")],
             [InlineKeyboardButton(text="🏠 Меню", callback_data="back_to_main")]
         ])
     )
-    await callback.answer("Готово!")
+    await callback.answer()
 
 
 @router.message(ScheduledStates.reschedule, F.text)
@@ -341,14 +326,13 @@ async def reschedule_custom(message: Message, state: FSMContext):
         new_time = datetime(year, month, day, hour, minute)
         
         if new_time <= now:
-            await message.answer("⚠️ Время должно быть в будущем!")
+            await message.answer("⚠️ Время в будущем!")
             return
         
         await db.update_scheduled_post_time(post_id, new_time)
         
         await message.answer(
-            f"✅ <b>Время изменено!</b>\n\n"
-            f"📅 Публикация: {new_time.strftime('%d.%m в %H:%M')} МСК",
+            f"✅ <b>Время изменено!</b>\n\n📅 {new_time.strftime('%d.%m в %H:%M')} МСК",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📅 К посту", callback_data=f"sched_view_{post_id}")],
@@ -358,7 +342,7 @@ async def reschedule_custom(message: Message, state: FSMContext):
         await state.set_state(ScheduledStates.viewing)
     
     except ValueError:
-        await message.answer("⚠️ Формат: <code>ЧЧ ММ ДД ММ</code>\nПример: <code>14 30 05 12</code>", parse_mode="HTML")
+        await message.answer("⚠️ Формат: <code>ЧЧ ММ ДД ММ</code>", parse_mode="HTML")
 
 
 # ============ ПУБЛИКАЦИЯ СЕЙЧАС ============
@@ -401,10 +385,10 @@ async def publish_now(callback: CallbackQuery, state: FSMContext, bot: Bot):
         else:
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Меню", callback_data="back_to_main")]])
         
-        await callback.message.edit_text("✅ <b>Опубликовано!</b>", parse_mode="HTML", reply_markup=kb)
+        await callback.message.edit_text("✅ Опубликовано!", reply_markup=kb)
     
     except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка: {e}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sched_view_{post_id}")]]))
+        await callback.message.edit_text(f"❌ Ошибка: {e}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️", callback_data=f"sched_view_{post_id}")]]))
     
     await callback.answer()
 

@@ -5,7 +5,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime, timedelta
 import logging
-import asyncio
 import pytz
 
 from keyboards import (
@@ -19,11 +18,12 @@ import database as db
 router = Router()
 logger = logging.getLogger(__name__)
 
+# Московский часовой пояс
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 
 def get_moscow_now():
-    """Московское время без tzinfo"""
+    """Получить текущее московское время (без tzinfo для сравнения с БД)"""
     return datetime.now(MOSCOW_TZ).replace(tzinfo=None)
 
 
@@ -135,46 +135,35 @@ async def publish_post(bot: Bot, channel_id: int, data: dict, user_id: int):
     parse_mode = settings['formatting'] if settings else 'HTML'
     disable_notification = not settings['notifications'] if settings else True
     
-    max_retries = 3
-    last_error = None
-    
-    for attempt in range(max_retries):
-        try:
-            if album:
-                media_group = []
-                for i, item in enumerate(album):
-                    if item['type'] == 'photo':
-                        media = InputMediaPhoto(media=item['file_id'])
-                    else:
-                        media = InputMediaVideo(media=item['file_id'])
-                    if i == 0 and text:
-                        media.caption = text
-                        media.parse_mode = parse_mode
-                    media_group.append(media)
-                messages = await bot.send_media_group(chat_id=channel_id, media=media_group, disable_notification=disable_notification)
-                if keyboard:
-                    await bot.send_message(chat_id=channel_id, text="⬆️", reply_markup=keyboard, disable_notification=disable_notification)
-                msg = messages[0]
-            elif media_type == 'photo' and media_file_id:
-                msg = await bot.send_photo(chat_id=channel_id, photo=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
-            elif media_type == 'video' and media_file_id:
-                msg = await bot.send_video(chat_id=channel_id, video=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
-            elif media_type == 'document' and media_file_id:
-                msg = await bot.send_document(chat_id=channel_id, document=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
-            else:
-                msg = await bot.send_message(chat_id=channel_id, text=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
-            
-            await db.add_post_stats(channel_id, msg.message_id)
-            return True, msg
-            
-        except Exception as e:
-            last_error = str(e)
-            logger.warning(f"Попытка {attempt + 1}/{max_retries} публикации в {channel_id}: {e}")
-            
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1)
-    
-    return False, last_error
+    try:
+        if album:
+            media_group = []
+            for i, item in enumerate(album):
+                if item['type'] == 'photo':
+                    media = InputMediaPhoto(media=item['file_id'])
+                else:
+                    media = InputMediaVideo(media=item['file_id'])
+                if i == 0 and text:
+                    media.caption = text
+                    media.parse_mode = parse_mode
+                media_group.append(media)
+            messages = await bot.send_media_group(chat_id=channel_id, media=media_group, disable_notification=disable_notification)
+            if keyboard:
+                await bot.send_message(chat_id=channel_id, text="⬆️", reply_markup=keyboard, disable_notification=disable_notification)
+            msg = messages[0]
+        elif media_type == 'photo' and media_file_id:
+            msg = await bot.send_photo(chat_id=channel_id, photo=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
+        elif media_type == 'video' and media_file_id:
+            msg = await bot.send_video(chat_id=channel_id, video=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
+        elif media_type == 'document' and media_file_id:
+            msg = await bot.send_document(chat_id=channel_id, document=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
+        else:
+            msg = await bot.send_message(chat_id=channel_id, text=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)
+        
+        await db.add_post_stats(channel_id, msg.message_id)
+        return True, msg
+    except Exception as e:
+        return False, str(e)
 
 
 # ============ СОЗДАНИЕ ПОСТА ============
@@ -196,9 +185,17 @@ async def create_post_start(message: Message, state: FSMContext):
         await state.set_state(CreatePostStates.select_channel)
         return
     
-    # Всегда показываем список каналов с кнопкой добавления
-    await message.answer("📢 <b>Выберите канал:</b>", parse_mode="HTML", reply_markup=get_channels_keyboard(channels))
-    await state.set_state(CreatePostStates.select_channel)
+    if len(channels) == 1:
+        await state.update_data(channel_id=channels[0]['channel_id'])
+        await message.answer(
+            f"📝 <b>Канал:</b> {channels[0]['channel_title'] or channels[0]['channel_username']}\n\nВведите текст:",
+            parse_mode="HTML",
+            reply_markup=get_cancel_keyboard()
+        )
+        await state.set_state(CreatePostStates.enter_text)
+    else:
+        await message.answer("📢 <b>Выберите канал:</b>", parse_mode="HTML", reply_markup=get_channels_keyboard(channels))
+        await state.set_state(CreatePostStates.select_channel)
 
 
 @router.callback_query(CreatePostStates.select_channel, F.data.startswith("channel_select_"))
@@ -220,36 +217,22 @@ async def add_channel_from_forward(message: Message, state: FSMContext, bot: Bot
         await message.answer("⚠️ Это не канал")
         return
     
-    # Retry логика для проверки прав (Telegram API иногда глючит)
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            bot_member = await bot.get_chat_member(chat.id, bot.id)
-            if bot_member.status not in ['administrator', 'creator']:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)  # Ждём и пробуем ещё
-                    continue
-                await message.answer("⚠️ Бот не админ канала. Добавьте бота в админы и попробуйте снова.")
-                return
-            if not getattr(bot_member, 'can_post_messages', False):
-                await message.answer("⚠️ Нет прав на публикацию. Включите право 'Публикация сообщений' для бота.")
-                return
-            
-            user_member = await bot.get_chat_member(chat.id, message.from_user.id)
-            if user_member.status not in ['creator', 'administrator']:
-                await message.answer("⚠️ Вы не админ канала")
-                return
-            
-            # Всё ок, выходим из цикла
-            break
-            
-        except Exception as e:
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1)
-                continue
-            logger.error(f"Ошибка проверки прав канала {chat.id}: {e}")
-            await message.answer(f"⚠️ Ошибка проверки прав. Попробуйте ещё раз через пару секунд.")
+    try:
+        bot_member = await bot.get_chat_member(chat.id, bot.id)
+        if bot_member.status not in ['administrator', 'creator']:
+            await message.answer("⚠️ Бот не админ канала")
             return
+        if not getattr(bot_member, 'can_post_messages', False):
+            await message.answer("⚠️ Нет прав на публикацию")
+            return
+        
+        user_member = await bot.get_chat_member(chat.id, message.from_user.id)
+        if user_member.status not in ['creator', 'administrator']:
+            await message.answer("⚠️ Вы не админ канала")
+            return
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {e}")
+        return
     
     await db.add_channel(channel_id=chat.id, username=chat.username, title=chat.title, added_by=message.from_user.id)
     await state.update_data(channel_id=chat.id)
@@ -528,7 +511,7 @@ async def confirm_publish(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await callback.answer()
 
 
-# ============ ОТЛОЖЕННАЯ ПУБЛИКАЦИЯ (МОСКОВСКОЕ ВРЕМЯ) ============
+# ============ ОТЛОЖЕННАЯ ПУБЛИКАЦИЯ ============
 
 @router.callback_query(CreatePostStates.publish_menu, F.data == "schedule_post")
 async def schedule_menu(callback: CallbackQuery, state: FSMContext):
@@ -544,7 +527,10 @@ async def schedule_menu(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(CreatePostStates.publish_menu, F.data.startswith("schedule_"))
 async def schedule_preset(callback: CallbackQuery, state: FSMContext):
     preset = callback.data.replace("schedule_", "")
+    
+    # ВАЖНО: Получаем московское время
     now = get_moscow_now()
+    logger.info(f"Schedule preset: {preset}, Moscow now: {now}")
     
     if preset == "1h":
         scheduled = now + timedelta(hours=1)
@@ -559,7 +545,7 @@ async def schedule_preset(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
             f"📅 <b>Введите время (МСК):</b>\n\n"
             f"Формат: <code>ЧЧ ММ ДД ММ</code>\n"
-            f"Пример: <code>14 00 05 12</code> = 5 дек 14:00\n\n"
+            f"Пример: <code>14 00 17 12</code> = 17 декабря 14:00\n\n"
             f"🕐 Сейчас: {now.strftime('%H:%M')} МСК",
             parse_mode="HTML",
             reply_markup=get_back_inline_keyboard("back_to_publish_menu")
@@ -571,8 +557,11 @@ async def schedule_preset(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка")
         return
     
+    logger.info(f"Scheduled time (Moscow): {scheduled}")
+    
     data = await state.get_data()
     
+    # Сохраняем МОСКОВСКОЕ время
     await db.add_scheduled_post(
         channel_id=data.get('channel_id'),
         user_id=callback.from_user.id,
@@ -609,6 +598,8 @@ async def schedule_custom(message: Message, state: FSMContext):
         if scheduled <= now:
             await message.answer("⚠️ Время в будущем!")
             return
+        
+        logger.info(f"Custom scheduled time (Moscow): {scheduled}")
         
         data = await state.get_data()
         
