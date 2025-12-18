@@ -8,7 +8,7 @@ import logging
 import pytz
 
 from keyboards import (
-    get_main_menu, get_cancel_keyboard, get_channels_keyboard,
+    get_main_menu, get_cancel_keyboard,
     get_publish_keyboard, get_confirm_publish_keyboard, get_schedule_keyboard,
     get_delete_timer_keyboard, get_view_post_keyboard,
     parse_url_buttons, get_back_inline_keyboard
@@ -18,13 +18,29 @@ import database as db
 router = Router()
 logger = logging.getLogger(__name__)
 
-# Московский часовой пояс
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 
 def get_moscow_now():
-    """Получить текущее московское время (без tzinfo для сравнения с БД)"""
+    """Московское время без tzinfo"""
     return datetime.now(MOSCOW_TZ).replace(tzinfo=None)
+
+
+def get_channels_keyboard(channels):
+    """Клавиатура выбора канала"""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    buttons = []
+    for ch in channels:
+        name = ch['channel_title'] or ch['channel_username'] or str(ch['channel_id'])
+        buttons.append([
+            InlineKeyboardButton(text=f"📢 {name}", callback_data=f"channel_select_{ch['channel_id']}")
+        ])
+    
+    buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data="add_channel_from_post")])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_post")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 class CreatePostStates(StatesGroup):
@@ -175,27 +191,69 @@ async def create_post_start(message: Message, state: FSMContext):
     channels = await db.get_channels(message.from_user.id)
     
     if not channels:
+        # Нет каналов - предлагаем добавить
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         await message.answer(
-            "📢 <b>Нет каналов</b>\n\n"
-            "1. Добавьте бота в канал как админа\n"
-            "2. Перешлите сообщение из канала",
+            "📢 <b>Нет подключенных каналов</b>\n\n"
+            "Сначала добавьте канал:\n"
+            "1. Добавьте бота в канал как администратора\n"
+            "2. Дайте права на публикацию\n"
+            "3. Перешлите сюда любое сообщение из канала",
             parse_mode="HTML",
-            reply_markup=get_cancel_keyboard()
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить канал", callback_data="add_channel_from_post")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_post")]
+            ])
         )
         await state.set_state(CreatePostStates.select_channel)
         return
     
-    if len(channels) == 1:
-        await state.update_data(channel_id=channels[0]['channel_id'])
-        await message.answer(
-            f"📝 <b>Канал:</b> {channels[0]['channel_title'] or channels[0]['channel_username']}\n\nВведите текст:",
+    # ВСЕГДА показываем выбор канала (даже если один)
+    await message.answer(
+        "📢 <b>Выберите канал для публикации:</b>",
+        parse_mode="HTML",
+        reply_markup=get_channels_keyboard(channels)
+    )
+    await state.set_state(CreatePostStates.select_channel)
+
+
+@router.callback_query(F.data == "add_channel_from_post")
+async def add_channel_from_post(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "📢 <b>Добавление канала</b>\n\n"
+        "1. Добавьте бота в канал как администратора\n"
+        "2. Дайте боту права на публикацию сообщений\n"
+        "3. Перешлите мне любое сообщение из канала",
+        parse_mode="HTML",
+        reply_markup=get_back_inline_keyboard("back_to_channel_select")
+    )
+    await state.set_state(CreatePostStates.select_channel)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_channel_select")
+async def back_to_channel_select(callback: CallbackQuery, state: FSMContext):
+    channels = await db.get_channels(callback.from_user.id)
+    
+    if not channels:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        await callback.message.edit_text(
+            "📢 <b>Нет подключенных каналов</b>\n\n"
+            "Перешлите сообщение из канала чтобы добавить его.",
             parse_mode="HTML",
-            reply_markup=get_cancel_keyboard()
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_post")]
+            ])
         )
-        await state.set_state(CreatePostStates.enter_text)
     else:
-        await message.answer("📢 <b>Выберите канал:</b>", parse_mode="HTML", reply_markup=get_channels_keyboard(channels))
-        await state.set_state(CreatePostStates.select_channel)
+        await callback.message.edit_text(
+            "📢 <b>Выберите канал:</b>",
+            parse_mode="HTML",
+            reply_markup=get_channels_keyboard(channels)
+        )
+    
+    await state.set_state(CreatePostStates.select_channel)
+    await callback.answer()
 
 
 @router.callback_query(CreatePostStates.select_channel, F.data.startswith("channel_select_"))
@@ -204,7 +262,14 @@ async def channel_selected(callback: CallbackQuery, state: FSMContext):
     channel = await db.get_channel_by_id(channel_id)
     await state.update_data(channel_id=channel_id)
     
-    await callback.message.edit_text(f"📝 <b>Канал:</b> {channel['channel_title'] or channel['channel_username']}\n\nВведите текст:", parse_mode="HTML")
+    name = channel['channel_title'] or channel['channel_username'] if channel else "Канал"
+    
+    await callback.message.edit_text(
+        f"📝 <b>Канал:</b> {name}\n\n"
+        f"Введите текст поста:\n\n"
+        f"💡 <i>Можно использовать HTML: &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;</i>",
+        parse_mode="HTML"
+    )
     await state.set_state(CreatePostStates.enter_text)
     await callback.answer()
 
@@ -213,17 +278,17 @@ async def channel_selected(callback: CallbackQuery, state: FSMContext):
 async def add_channel_from_forward(message: Message, state: FSMContext, bot: Bot):
     chat = message.forward_from_chat
     
-    if chat.type not in ['channel']:
-        await message.answer("⚠️ Это не канал")
+    if chat.type != 'channel':
+        await message.answer("⚠️ Это не канал. Перешлите сообщение из канала.")
         return
     
     try:
         bot_member = await bot.get_chat_member(chat.id, bot.id)
         if bot_member.status not in ['administrator', 'creator']:
-            await message.answer("⚠️ Бот не админ канала")
+            await message.answer("⚠️ Бот не админ канала. Добавьте бота как администратора.")
             return
         if not getattr(bot_member, 'can_post_messages', False):
-            await message.answer("⚠️ Нет прав на публикацию")
+            await message.answer("⚠️ Нет прав на публикацию. Дайте боту право публиковать сообщения.")
             return
         
         user_member = await bot.get_chat_member(chat.id, message.from_user.id)
@@ -235,10 +300,17 @@ async def add_channel_from_forward(message: Message, state: FSMContext, bot: Bot
         return
     
     await db.add_channel(channel_id=chat.id, username=chat.username, title=chat.title, added_by=message.from_user.id)
-    await state.update_data(channel_id=chat.id)
     
-    await message.answer(f"✅ Канал <b>{chat.title}</b> добавлен!\n\nВведите текст:", parse_mode="HTML", reply_markup=get_cancel_keyboard())
-    await state.set_state(CreatePostStates.enter_text)
+    # После добавления показываем выбор каналов
+    channels = await db.get_channels(message.from_user.id)
+    
+    await message.answer(
+        f"✅ Канал <b>{chat.title}</b> добавлен!\n\n"
+        f"📢 <b>Выберите канал для публикации:</b>",
+        parse_mode="HTML",
+        reply_markup=get_channels_keyboard(channels)
+    )
+    await state.set_state(CreatePostStates.select_channel)
 
 
 @router.message(CreatePostStates.enter_text, F.text)
@@ -319,7 +391,7 @@ async def album_photo(message: Message, state: FSMContext):
         return
     album.append({'type': 'photo', 'file_id': message.photo[-1].file_id})
     await state.update_data(album=album)
-    await message.answer(f"✅ Фото добавлено! 📎 {len(album)}/10", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]]))
+    await message.answer(f"✅ Фото! 📎 {len(album)}/10", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]]))
 
 
 @router.message(CreatePostStates.add_album, F.video)
@@ -332,7 +404,7 @@ async def album_video(message: Message, state: FSMContext):
         return
     album.append({'type': 'video', 'file_id': message.video.file_id})
     await state.update_data(album=album)
-    await message.answer(f"✅ Видео добавлено! 📎 {len(album)}/10", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]]))
+    await message.answer(f"✅ Видео! 📎 {len(album)}/10", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]]))
 
 
 @router.callback_query(F.data == "finish_album")
@@ -527,10 +599,7 @@ async def schedule_menu(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(CreatePostStates.publish_menu, F.data.startswith("schedule_"))
 async def schedule_preset(callback: CallbackQuery, state: FSMContext):
     preset = callback.data.replace("schedule_", "")
-    
-    # ВАЖНО: Получаем московское время
     now = get_moscow_now()
-    logger.info(f"Schedule preset: {preset}, Moscow now: {now}")
     
     if preset == "1h":
         scheduled = now + timedelta(hours=1)
@@ -545,7 +614,7 @@ async def schedule_preset(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
             f"📅 <b>Введите время (МСК):</b>\n\n"
             f"Формат: <code>ЧЧ ММ ДД ММ</code>\n"
-            f"Пример: <code>14 00 17 12</code> = 17 декабря 14:00\n\n"
+            f"Пример: <code>14 00 18 12</code> = 18 декабря 14:00\n\n"
             f"🕐 Сейчас: {now.strftime('%H:%M')} МСК",
             parse_mode="HTML",
             reply_markup=get_back_inline_keyboard("back_to_publish_menu")
@@ -557,11 +626,8 @@ async def schedule_preset(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка")
         return
     
-    logger.info(f"Scheduled time (Moscow): {scheduled}")
-    
     data = await state.get_data()
     
-    # Сохраняем МОСКОВСКОЕ время
     await db.add_scheduled_post(
         channel_id=data.get('channel_id'),
         user_id=callback.from_user.id,
@@ -598,8 +664,6 @@ async def schedule_custom(message: Message, state: FSMContext):
         if scheduled <= now:
             await message.answer("⚠️ Время в будущем!")
             return
-        
-        logger.info(f"Custom scheduled time (Moscow): {scheduled}")
         
         data = await state.get_data()
         
@@ -657,15 +721,3 @@ async def delete_timer_custom(message: Message, state: FSMContext):
         await state.set_state(CreatePostStates.publish_menu)
     except ValueError:
         await message.answer("⚠️ Введите число минут")
-
-
-@router.callback_query(F.data == "add_channel")
-@router.message(Command("addchannel"))
-async def add_channel_cmd(update, state: FSMContext):
-    text = "📢 <b>Добавление канала</b>\n\n1. Добавьте бота админом\n2. Перешлите сообщение из канала"
-    if isinstance(update, CallbackQuery):
-        await update.message.edit_text(text, parse_mode="HTML")
-        await update.answer()
-    else:
-        await update.answer(text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
-    await state.set_state(CreatePostStates.select_channel)
