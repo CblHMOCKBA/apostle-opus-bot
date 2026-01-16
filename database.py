@@ -1,6 +1,7 @@
 import aiosqlite
 from datetime import datetime
 from config import DATABASE_PATH
+import json
 
 
 async def init_db():
@@ -40,6 +41,7 @@ async def init_db():
                 media_type TEXT,
                 media_file_id TEXT,
                 buttons TEXT,
+                album TEXT,
                 scheduled_time DATETIME NOT NULL,
                 delete_after INTEGER,
                 status TEXT DEFAULT 'pending',
@@ -69,6 +71,7 @@ async def init_db():
                 media_type TEXT,
                 media_file_id TEXT,
                 buttons TEXT,
+                album TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -156,16 +159,18 @@ async def update_user_setting(user_id: int, setting: str, value):
 
 async def add_scheduled_post(channel_id: int, user_id: int, text: str, 
                              media_type: str, media_file_id: str, buttons: str,
-                             scheduled_time: datetime, delete_after: int = None):
+                             scheduled_time: datetime, delete_after: int = None, album: list = None):
     """Добавить отложенный пост"""
+    album_json = json.dumps(album) if album else None
+    
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO scheduled_posts 
-               (channel_id, user_id, text, media_type, media_file_id, buttons, 
+               (channel_id, user_id, text, media_type, media_file_id, buttons, album,
                 scheduled_time, delete_after)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (channel_id, user_id, text, media_type, media_file_id, buttons,
-             scheduled_time, delete_after)
+             album_json, scheduled_time, delete_after)
         )
         await db.commit()
         return cursor.lastrowid
@@ -269,14 +274,16 @@ async def add_post_stats(channel_id: int, message_id: int):
 # ============ TEMPLATES ============
 
 async def add_template(user_id: int, name: str, text: str, media_type: str,
-                       media_file_id: str, buttons: str):
+                       media_file_id: str, buttons: str, album: list = None):
     """Добавить шаблон"""
+    album_json = json.dumps(album) if album else None
+    
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO templates 
-               (user_id, name, text, media_type, media_file_id, buttons)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, name, text, media_type, media_file_id, buttons)
+               (user_id, name, text, media_type, media_file_id, buttons, album)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, name, text, media_type, media_file_id, buttons, album_json)
         )
         await db.commit()
         return cursor.lastrowid

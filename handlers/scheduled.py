@@ -6,6 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 import pytz
+import json
 
 from keyboards import get_main_menu, parse_url_buttons
 import database as db
@@ -100,7 +101,17 @@ async def view_scheduled_post(callback: CallbackQuery, state: FSMContext):
     if post['text']:
         text += f"\n📝 <b>Текст:</b>\n<i>{post['text'][:200]}{'...' if len(post['text']) > 200 else ''}</i>\n"
     
-    if post['media_type']:
+    # Проверяем альбом
+    album = None
+    if post['album']:
+        try:
+            album = json.loads(post['album'])
+        except:
+            album = None
+    
+    if album and len(album) > 0:
+        text += f"\n📸 <b>Альбом:</b> {len(album)} файлов\n"
+    elif post['media_type']:
         media_names = {'photo': '📷 Фото', 'video': '🎥 Видео', 'document': '📄 Документ'}
         text += f"\n📎 <b>Медиа:</b> {media_names.get(post['media_type'], post['media_type'])}\n"
     
@@ -362,7 +373,41 @@ async def publish_now(callback: CallbackQuery, state: FSMContext, bot: Bot):
     keyboard = parse_url_buttons(post['buttons']) if post['buttons'] else None
     
     try:
-        if post['media_type'] == 'photo':
+        # Парсим альбом из JSON если есть
+        album = None
+        if post['album']:
+            try:
+                album = json.loads(post['album'])
+            except:
+                album = None
+        
+        msg = None
+        
+        # Если есть альбом - публикуем как media_group
+        if album and len(album) > 0:
+            from aiogram.types import InputMediaPhoto, InputMediaVideo
+            
+            media_group = []
+            for i, item in enumerate(album):
+                if item['type'] == 'photo':
+                    media = InputMediaPhoto(media=item['file_id'])
+                else:
+                    media = InputMediaVideo(media=item['file_id'])
+                
+                if i == 0 and post['text']:
+                    media.caption = post['text']
+                    media.parse_mode = parse_mode
+                
+                media_group.append(media)
+            
+            messages = await bot.send_media_group(post['channel_id'], media=media_group)
+            msg = messages[0]
+            
+            # Если есть кнопки - отправляем отдельным сообщением
+            if keyboard:
+                await bot.send_message(post['channel_id'], text="⬆️", reply_markup=keyboard)
+        
+        elif post['media_type'] == 'photo':
             msg = await bot.send_photo(post['channel_id'], post['media_file_id'], caption=post['text'], reply_markup=keyboard, parse_mode=parse_mode)
         elif post['media_type'] == 'video':
             msg = await bot.send_video(post['channel_id'], post['media_file_id'], caption=post['text'], reply_markup=keyboard, parse_mode=parse_mode)

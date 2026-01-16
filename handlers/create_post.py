@@ -635,6 +635,7 @@ async def schedule_preset(callback: CallbackQuery, state: FSMContext):
         media_type=data.get('media_type'),
         media_file_id=data.get('media_file_id'),
         buttons=data.get('buttons_text'),
+        album=data.get('album'),
         scheduled_time=scheduled,
         delete_after=data.get('delete_after')
     )
@@ -674,6 +675,7 @@ async def schedule_custom(message: Message, state: FSMContext):
             media_type=data.get('media_type'),
             media_file_id=data.get('media_file_id'),
             buttons=data.get('buttons_text'),
+            album=data.get('album'),
             scheduled_time=scheduled,
             delete_after=data.get('delete_after')
         )

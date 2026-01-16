@@ -2,8 +2,10 @@ import asyncio
 import logging
 from datetime import datetime
 import pytz
+import json
 
 from aiogram import Bot
+from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 import database as db
 from keyboards import parse_url_buttons
@@ -84,9 +86,51 @@ async def publish_scheduled_post(bot: Bot, post):
         if post['buttons']:
             keyboard = parse_url_buttons(post['buttons'])
         
+        # Парсим альбом из JSON
+        album = None
+        if post['album']:
+            try:
+                album = json.loads(post['album'])
+            except:
+                album = None
+        
         msg = None
         
-        if post['media_type'] == 'photo' and post['media_file_id']:
+        # Если есть альбом - публикуем как media_group
+        if album and len(album) > 0:
+            media_group = []
+            for i, item in enumerate(album):
+                if item['type'] == 'photo':
+                    media = InputMediaPhoto(media=item['file_id'])
+                else:
+                    media = InputMediaVideo(media=item['file_id'])
+                
+                # Текст добавляем только к первому медиа
+                if i == 0 and post['text']:
+                    media.caption = post['text']
+                    media.parse_mode = parse_mode
+                
+                media_group.append(media)
+            
+            # Публикуем альбом
+            messages = await bot.send_media_group(
+                chat_id=post['channel_id'],
+                media=media_group,
+                disable_notification=disable_notification
+            )
+            msg = messages[0]
+            
+            # Если есть кнопки - отправляем их отдельным сообщением
+            if keyboard:
+                await bot.send_message(
+                    chat_id=post['channel_id'],
+                    text="⬆️",
+                    reply_markup=keyboard,
+                    disable_notification=disable_notification
+                )
+        
+        # Обычная публикация (одно медиа или текст)
+        elif post['media_type'] == 'photo' and post['media_file_id']:
             msg = await bot.send_photo(
                 chat_id=post['channel_id'],
                 photo=post['media_file_id'],
@@ -134,7 +178,7 @@ async def publish_scheduled_post(bot: Bot, post):
         except:
             pass
         
-        if post['delete_after']:
+        if post['delete_after'] and msg:
             asyncio.create_task(delete_post_later(bot, post['channel_id'], msg.message_id, post['delete_after']))
     
     except Exception as e:
