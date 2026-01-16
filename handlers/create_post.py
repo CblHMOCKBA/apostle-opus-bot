@@ -120,7 +120,7 @@ async def send_preview(message: Message, data: dict, bot: Bot, edit: bool = Fals
                 media_group.append(media)
             await message.answer_media_group(media=media_group)
             if keyboard:
-                await message.answer("⬆️", reply_markup=keyboard)
+                await message.answer("⬆️ Используйте кнопки ниже:", reply_markup=keyboard)
             return True
         elif media_type == 'photo' and media_file_id:
             await message.answer_photo(photo=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode)
@@ -376,13 +376,18 @@ async def add_media(callback: CallbackQuery, state: FSMContext):
 async def add_album_start(callback: CallbackQuery, state: FSMContext):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     await state.update_data(album=[], media_type=None, media_file_id=None)
-    await callback.message.edit_text("📸 <b>Альбом</b>\n\nОтправляйте фото/видео (макс 10)\n\n📎 0/10", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Готово", callback_data="finish_album")]]))
+    sent = await callback.message.edit_text(
+        "📸 <b>Альбом</b>\n\nОтправляйте фото/видео (макс 10)\n\n📎 0/10", 
+        parse_mode="HTML", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Готово", callback_data="finish_album")]])
+    )
+    await state.update_data(album_message_id=sent.message_id)
     await state.set_state(CreatePostStates.add_album)
     await callback.answer()
 
 
 @router.message(CreatePostStates.add_album, F.photo)
-async def album_photo(message: Message, state: FSMContext):
+async def album_photo(message: Message, state: FSMContext, bot: Bot):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     data = await state.get_data()
     album = data.get('album', [])
@@ -391,11 +396,29 @@ async def album_photo(message: Message, state: FSMContext):
         return
     album.append({'type': 'photo', 'file_id': message.photo[-1].file_id})
     await state.update_data(album=album)
-    await message.answer(f"✅ Фото! 📎 {len(album)}/10", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]]))
+    
+    # Редактируем существующее сообщение вместо создания нового
+    album_message_id = data.get('album_message_id')
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=album_message_id,
+            text=f"📸 <b>Альбом</b>\n\nОтправляйте фото/видео (макс 10)\n\n📎 {len(album)}/10",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]])
+        )
+    except:
+        pass
+    
+    # Удаляем сообщение пользователя для чистоты
+    try:
+        await message.delete()
+    except:
+        pass
 
 
 @router.message(CreatePostStates.add_album, F.video)
-async def album_video(message: Message, state: FSMContext):
+async def album_video(message: Message, state: FSMContext, bot: Bot):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     data = await state.get_data()
     album = data.get('album', [])
@@ -404,7 +427,25 @@ async def album_video(message: Message, state: FSMContext):
         return
     album.append({'type': 'video', 'file_id': message.video.file_id})
     await state.update_data(album=album)
-    await message.answer(f"✅ Видео! 📎 {len(album)}/10", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]]))
+    
+    # Редактируем существующее сообщение вместо создания нового
+    album_message_id = data.get('album_message_id')
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=album_message_id,
+            text=f"📸 <b>Альбом</b>\n\nОтправляйте фото/видео (макс 10)\n\n📎 {len(album)}/10",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Готово ({len(album)})", callback_data="finish_album")]])
+        )
+    except:
+        pass
+    
+    # Удаляем сообщение пользователя для чистоты
+    try:
+        await message.delete()
+    except:
+        pass
 
 
 @router.callback_query(F.data == "finish_album")
@@ -420,24 +461,38 @@ async def finish_album(callback: CallbackQuery, state: FSMContext):
 async def clear_album(callback: CallbackQuery, state: FSMContext):
     await state.update_data(album=[])
     data = await state.get_data()
-    await callback.message.edit_text("🗑 Альбом очищен", reply_markup=get_post_constructor_keyboard(has_text=bool(data.get('post_text')), has_media=False, has_buttons=data.get('buttons_text') is not None))
+    await callback.message.edit_text("🗑 Альбом очищен", reply_markup=get_post_constructor_keyboard(has_text=bool(data.get('post_text')), has_media=False, has_buttons=data.get('buttons_text') is not None, has_album=False))
     await callback.answer()
 
 
 @router.callback_query(CreatePostStates.constructor, F.data == "view_album")
-async def view_album(callback: CallbackQuery, state: FSMContext):
+async def view_album(callback: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
     album = data.get('album', [])
     if not album:
-        await callback.answer("Пусто")
+        await callback.answer("Альбом пуст", show_alert=True)
         return
+    
+    text = data.get('post_text', '')
+    buttons_text = data.get('buttons_text')
+    keyboard = parse_url_buttons(buttons_text) if buttons_text else None
+    settings = await db.get_user_settings(callback.from_user.id)
+    parse_mode = settings['formatting'] if settings else 'HTML'
+    
     media_group = []
-    for item in album:
+    for i, item in enumerate(album):
         if item['type'] == 'photo':
-            media_group.append(InputMediaPhoto(media=item['file_id']))
+            media = InputMediaPhoto(media=item['file_id'])
         else:
-            media_group.append(InputMediaVideo(media=item['file_id']))
+            media = InputMediaVideo(media=item['file_id'])
+        if i == 0 and text:
+            media.caption = text
+            media.parse_mode = parse_mode
+        media_group.append(media)
+    
     await callback.message.answer_media_group(media=media_group)
+    if keyboard:
+        await callback.message.answer("⬆️ Так будут выглядеть кнопки:", reply_markup=keyboard)
     await callback.answer()
 
 
