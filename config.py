@@ -3,7 +3,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8214171666:AAHrefgese3K053ukyWwOJ2kfleUcpuQ2-s")
+# Токен бота (ОБЯЗАТЕЛЬНО должен быть в переменных окружения)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден! Добавьте его в переменные окружения Railway.")
+
+# Админы
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
 # Database
