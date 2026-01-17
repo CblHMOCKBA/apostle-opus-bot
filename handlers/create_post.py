@@ -165,7 +165,8 @@ async def publish_post(bot: Bot, channel_id: int, data: dict, user_id: int):
                 media_group.append(media)
             messages = await bot.send_media_group(chat_id=channel_id, media=media_group, disable_notification=disable_notification)
             if keyboard:
-                await bot.send_message(chat_id=channel_id, text="⬆️", reply_markup=keyboard, disable_notification=disable_notification)
+                # Отправляем кнопки без лишнего текста (используем невидимый символ)
+                await bot.send_message(chat_id=channel_id, text="​", reply_markup=keyboard, disable_notification=disable_notification)
             msg = messages[0]
         elif media_type == 'photo' and media_file_id:
             msg = await bot.send_photo(chat_id=channel_id, photo=media_file_id, caption=text, reply_markup=keyboard, parse_mode=parse_mode, disable_notification=disable_notification)

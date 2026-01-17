@@ -12,7 +12,9 @@ if not BOT_TOKEN:
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
 # Database
-DATABASE_PATH = "bot_database.db"
+# Railway автоматически добавляет DATABASE_URL для PostgreSQL
+DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_PATH = "bot_database.db"  # Для локальной разработки (SQLite)
 
 # Default settings
 DEFAULT_TIMEZONE = "Europe/Moscow"
